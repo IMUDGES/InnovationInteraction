@@ -1,0 +1,172 @@
+#include "Wire.h"
+#include "I2Cdev.h"
+#include "MPU6050.h"
+
+MPU6050 accelgyro;
+//#include <LiquidCrystal.h>;
+//LiquidCrystal lcd( 12, 11, 10, 9, 8,7);
+
+#define Gry_offset -20     // 陀螺仪偏移量
+//#define Gyr_Gain 0.04      // 满量程2000dps时灵敏度(dps/digital)
+#define Gyr_Gain 65.5 
+#define pi 3.14159
+
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+
+
+/********** 互补滤波器参数 *********/
+//unsigned long preTime = 0; // 采样时间
+//float f_angle = 0.0;       // 滤波处理后的角度值
+
+
+/*********** PID控制器参数 *********/
+//unsigned long lastTime;
+float Output;   //;, Setpoint,Input;
+        //double errSum, lastErr;
+float kp, ki, kd, kpp;
+//int SampleTime = 0.1; //1 sec
+//float Outputa = 0.0;  
+float angleA, omega;
+//double Kp, Ki, Kd;
+float P[2][2] = { { 1, 0 },{ 0, 1 } };
+float Pdot[4] = { 0,0,0,0 };
+static const double Q_angle = 0.001, Q_gyro = 0.003, R_angle = 0.5, dtt = 0.007, C_0 = 1;
+float q_bias, angle_err, PCt_0, PCt_1, E, K_0, K_1, t_0, t_1;
+float angle, angle_dot;   // aaxdot,aax;
+float position_dot, position_dot_filter, positiono;
+//double Speed_Need=0;
+
+//float K_angle=2;
+//float K_angle_dot=0.5;       //换算系数：256/10 =25.6；
+//float K_position=0.1;                //换算系数：(256/10) * (2*pi/(64*12))=0.20944；//256/10:电压换算至PWM，256对应10V；        
+//float K_position_dot=1;                //换算系数：(256/10) * (25*2*pi/(64*12))=20.944；
+
+//--------------------------------------
+
+int oommm;
+int ooommm;
+//int oooommmm;
+//double OLH= 10,ORH = 10;
+
+int TN1 = 9;
+int TN2 = 8;
+int TN3 =10;
+int TN4 = 11;
+int ENA = 6;
+int ENB = 7;
+
+//-------------------------------------
+void setup() {
+  Wire.begin();
+  //lcd.begin(16, 2);
+  //lcd.print("hello, world!");
+  //delay(1000); 
+
+  accelgyro.initialize();
+  delay(500);
+  pinMode(22, OUTPUT);
+  pinMode(23, OUTPUT);
+  pinMode(24, OUTPUT);
+  pinMode(25, OUTPUT);
+  pinMode(2, OUTPUT);
+  pinMode(3, OUTPUT);
+
+  delay(100);
+  Serial.begin(9600);
+}
+
+void loop() {
+  accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  //-----------------------------------------------------------------------------------------------------------------
+
+  angleA = atan2(ay, az) * 180 / pi - 0.2;
+  // 根据加速度分量得到的角度(degree) 
+  //180度至0至-180（360度）取0度为坚直时中立点 因为坚直时为有偏差，所以减去0.2度....
+  //omega=  Gyr_Gain * (gx +  Gry_offset); // 当前角速度(degree/s)
+  omega = (gx + Gry_offset) / Gyr_Gain; // 当前角速度(degree/s)
+  if (abs(angleA)<30) {    //这个是误差达到一定程度后的系统关闭开关.
+
+    Kalman_Filter(angleA, omega);
+    PIDD();
+    PWMB();
+    //LCDD();
+  }
+  else {
+
+    analogWrite(ENA, 0); //PWM调速a==0-255
+    analogWrite(ENB, 0);
+  }
+  delay(10);
+}
+//=---------------------------------------------------------------
+
+
+void Kalman_Filter(double angle_m, double gyro_m)
+{
+  angle += (gyro_m - q_bias) * dtt;
+  Pdot[0] = Q_angle - P[0][1] - P[1][0];
+  Pdot[1] = -P[1][1];
+  Pdot[2] = -P[1][1];
+  Pdot[3] = Q_gyro;
+  P[0][0] += Pdot[0] * dtt;
+  P[0][1] += Pdot[1] * dtt;
+  P[1][0] += Pdot[2] * dtt;
+  P[1][1] += Pdot[3] * dtt;
+  angle_err = angle_m - angle;
+  PCt_0 = C_0 * P[0][0];
+  PCt_1 = C_0 * P[1][0];
+  E = R_angle + C_0 * PCt_0;
+  K_0 = PCt_0 / E;
+  K_1 = PCt_1 / E;
+  t_0 = PCt_0;
+  t_1 = C_0 * P[0][1];
+  P[0][0] -= K_0 * t_0;
+  P[0][1] -= K_0 * t_1;
+  P[1][0] -= K_1 * t_0;
+  P[1][1] -= K_1 * t_1;
+  angle += K_0 * angle_err;
+  q_bias += K_1 * angle_err;
+  angle_dot = gyro_m - q_bias;//也许应该用last_angle-angle
+}
+
+//-----------------------
+void  PIDD() {
+  kp = analogRead(8)*0.01;
+  ki = analogRead(9)*0.007;
+  kd = analogRead(10)*0.007;
+  kpp = analogRead(11)*0.007;
+  //aaxdot=0.5*aaxdot+0.5*angle_dot;
+  //aax=0.5*aax+0.5*angle;
+  position_dot = Output*0.04;                //利用PWM值代替轮速传感器的信号
+  position_dot_filter *= 0.9;                //车轮速度滤波
+  position_dot_filter += position_dot*0.1;
+  positiono += position_dot_filter;
+  //positiono+=Speed_Need;          
+  positiono = constrain(positiono, -500, 500);
+  Output = 2 * angle *kp + 0.5*angle_dot*ki + 0.02*positiono *kd + 1 * position_dot_filter *kpp;
+  //Output= K_angle*angle *kp + K_angle_dot*angle_dot *ki +K_position*positiono *kd + K_position_dot*position_dot_filter *kpp;
+}
+//-------------电机正反转 PWM输出-----------
+void PWMB() {
+  if (Output<0)
+  {
+
+    digitalWrite(TN1, HIGH);
+    digitalWrite(TN2, LOW);
+    digitalWrite(TN3, HIGH);
+    digitalWrite(TN4, LOW);
+
+  }
+  if (Output>0)
+  {
+
+    digitalWrite(TN1, LOW);
+    digitalWrite(TN2, HIGH);
+    digitalWrite(TN3, LOW);
+    digitalWrite(TN4, HIGH);
+  }
+  oommm = min(220, abs(Output));
+  analogWrite(ENA, oommm + 35); //PWM调速a==0-255
+  analogWrite(ENB, oommm + 30);
+}
